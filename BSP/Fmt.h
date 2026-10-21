@@ -19,7 +19,7 @@ extern "C" {
  *   - 输出为 8 位数组(ASCII 字符), 可直接交给 RingBuffer_Write / DMA。
  *
  * 典型用法 (TIM7 1kHz 遥测):
- *   const float telemetry[3] = {500.0f, FOC_State.Speed, PID_Speed_Output};
+ *   const float telemetry[3] = {500.0f, 1234.5f, -0.12f};
  *   uint8_t line[48];
  *   size_t n = Fmt_LineU8(line, sizeof(line), telemetry, 3u, 2u);
  *   if (n != 0u) {

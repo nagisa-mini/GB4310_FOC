@@ -32,10 +32,16 @@ typedef enum {
     USB_CMD_ID_SPEED_KP,
     USB_CMD_ID_SPEED_KI,
     USB_CMD_ID_SPEED_KD,
+    USB_CMD_ID_CURR_KP,
+    USB_CMD_ID_CURR_KI,
+    USB_CMD_ID_CURR_KD,
     USB_CMD_ID_ANGLE_REF,
     USB_CMD_ID_SPEED_REF,
+    USB_CMD_ID_CURR_REF,
+    USB_CMD_ID_CURR_D_REF,
     USB_CMD_ID_MODE,
-    USB_CMD_ID_SAVE
+    USB_CMD_ID_SAVE,
+    USB_CMD_ID_LOAD
 } USB_CmdId_t;
 
 typedef struct {
@@ -50,12 +56,34 @@ static const USB_CmdEntry_t s_cmd_table[] = {
     { "speed_kp",   USB_CMD_ID_SPEED_KP  },
     { "speed_ki",   USB_CMD_ID_SPEED_KI  },
     { "speed_kd",   USB_CMD_ID_SPEED_KD  },
-    { "angle",      USB_CMD_ID_ANGLE_REF },  // 兼容 PID_Run.Angle_Ref 的短名
+    { "curr_kp",    USB_CMD_ID_CURR_KP   },  // 电流环 d/q 共用
+    { "curr_ki",    USB_CMD_ID_CURR_KI   },
+    { "curr_kd",    USB_CMD_ID_CURR_KD   },
+    { "current_kp", USB_CMD_ID_CURR_KP   },  // 别名
+    { "current_ki", USB_CMD_ID_CURR_KI   },
+    { "current_kd", USB_CMD_ID_CURR_KD   },
+    { "angle",      USB_CMD_ID_ANGLE_REF },  // 兼容 Angle_Ref 的短名
     { "angle_ref",  USB_CMD_ID_ANGLE_REF },
     { "speed",      USB_CMD_ID_SPEED_REF },  // 上位机示例 "Speed=1.0"
     { "speed_ref",  USB_CMD_ID_SPEED_REF },
+    { "curr",       USB_CMD_ID_CURR_REF  },  // 电流模式 q 轴电流给定
+    { "curr_ref",   USB_CMD_ID_CURR_REF  },
+    { "current",    USB_CMD_ID_CURR_REF  },
+    { "current_ref", USB_CMD_ID_CURR_REF },
+    { "iq",         USB_CMD_ID_CURR_REF  },
+    { "iq_ref",     USB_CMD_ID_CURR_REF  },
+    { "id",         USB_CMD_ID_CURR_D_REF },  // 电流模式 d 轴电流给定
+    { "id_ref",     USB_CMD_ID_CURR_D_REF },
+    { "curr_d",     USB_CMD_ID_CURR_D_REF },
+    { "curr_d_ref", USB_CMD_ID_CURR_D_REF },
+    { "current_d",  USB_CMD_ID_CURR_D_REF },
+    { "current_d_ref", USB_CMD_ID_CURR_D_REF },
+    { "d_curr",     USB_CMD_ID_CURR_D_REF },
+    { "d_curr_ref", USB_CMD_ID_CURR_D_REF },
+    { "dcurr",      USB_CMD_ID_CURR_D_REF },
     { "mode",       USB_CMD_ID_MODE      },
-    { "save",       USB_CMD_ID_SAVE      },
+    { "save",       USB_CMD_ID_SAVE      },  // 无值命令: Save
+    { "load",       USB_CMD_ID_LOAD      },  // 无值命令: Load
 };
 
 /*==============================================================================
@@ -246,8 +274,8 @@ static bool USB_ApplyGain(PID_Loop_t loop, uint8_t gain_index, const char *value
 
 /**
   * @brief 设置角度给定并归一化到 (-π, π]
-  * @note  给定值实际变化时清空角度/角速度/电流 d/q 四个积分项,
-  *        避免旧积分继续抵抗新给定; 重复发送相同值不清零。
+  * @note  归一化后交给 PID_SetAngleRef(); 该接口在给定值实际变化时
+  *        清空角度/角速度/电流 d/q 四个积分项, 重复发送相同值不清零。
   */
 static bool USB_ApplyAngleRef(const char *value)
 {
@@ -271,18 +299,14 @@ static bool USB_ApplyAngleRef(const char *value)
         v += PID_2PI;
     }
 
-    if (PID_Run.Angle_Ref != v)
-    {
-        PID_Run.Angle_Ref = v;
-        PID_ResetIntegralAll();
-    }
+    PID_SetAngleRef(v);
     return true;
 }
 
 /**
   * @brief 设置角速度给定 (RPM)
-  * @note  给定值实际变化时清空角度/角速度/电流 d/q 四个积分项,
-  *        避免旧积分继续抵抗新给定; 重复发送相同值不清零。
+  * @note  交给 PID_SetSpeedRef(); 给定值实际变化时清空四个积分项,
+  *        重复发送相同值不清零。
   */
 static bool USB_ApplySpeedRef(const char *value)
 {
@@ -297,11 +321,7 @@ static bool USB_ApplySpeedRef(const char *value)
         return false;
     }
 
-    if (PID_Run.Speed_Ref != v)
-    {
-        PID_Run.Speed_Ref = v;
-        PID_ResetIntegralAll();
-    }
+    PID_SetSpeedRef(v);
     return true;
 }
 
@@ -316,7 +336,7 @@ static bool USB_ApplyMode(const char *value)
     {
         return false;
     }
-    if (mode > PID_MODE_SPEED)
+    if (mode > PID_MODE_CURRENT)
     {
         return false;
     }
@@ -325,19 +345,81 @@ static bool USB_ApplyMode(const char *value)
 }
 
 /**
-  * @brief 保存当前 PID 增益到 Flash
-  * @note  只接受 Save=1; 要求当前为 Mode=0 (STOP), 避免 Flash 擦除
-  *        阻塞 20kHz 电流环时电机仍被驱动。
+  * @brief 电流给定范围检查 (d/q 共用, 留 0.1mA 浮点解析容差)
   */
-static bool USB_ApplySave(const char *value)
+static bool USB_CurrentInRange(float v)
 {
-    uint32_t save;
+    const float limit = USB_CMD_CURR_MAX + 1.0e-4f;
 
-    if (!USB_ParseUint(value, &save) || (save != 1u))
+    return ((v >= -limit) && (v <= limit)) ? true : false;
+}
+
+/**
+  * @brief 设置 q 轴电流给定 (仅电流模式)
+  * @note  电流模式用于调试 20kHz 电流环; q 轴对应转矩。
+  */
+static bool USB_ApplyCurrentRef(const char *value)
+{
+    float v;
+
+    if (!USB_ParseFloat(value, &v))
     {
         return false;
     }
-    if (PID_Run.mode != PID_MODE_STOP)
+    if (!USB_CurrentInRange(v))
+    {
+        return false;
+    }
+    if (PID_GetMode() != PID_MODE_CURRENT)
+    {
+        return false;
+    }
+
+    return PID_SetCurrentRef(v);
+}
+
+/**
+  * @brief 设置 d 轴电流给定 (仅电流模式)
+  * @note  电流模式用于调试 20kHz 电流环; d 轴对应励磁分量。
+  */
+static bool USB_ApplyCurrentDRef(const char *value)
+{
+    float v;
+
+    if (!USB_ParseFloat(value, &v))
+    {
+        return false;
+    }
+    if (!USB_CurrentInRange(v))
+    {
+        return false;
+    }
+    if (PID_GetMode() != PID_MODE_CURRENT)
+    {
+        return false;
+    }
+
+    return PID_SetCurrentDRef(v);
+}
+
+/**
+  * @brief 保存当前 PID 增益到 Flash
+  * @note  新协议为无值命令 "save"; 为兼容旧上位机仍接受 "save=1"。
+  *        要求当前为 Mode=0 (STOP), 避免 Flash 擦除阻塞 20kHz 电流环时
+  *        电机仍被驱动。
+  */
+static bool USB_ApplySave(const char *value)
+{
+    if (value != NULL)
+    {
+        uint32_t save;
+
+        if (!USB_ParseUint(value, &save) || (save != 1u))
+        {
+            return false;
+        }
+    }
+    if (PID_GetMode() != PID_MODE_STOP)
     {
         return false;
     }
@@ -346,16 +428,38 @@ static bool USB_ApplySave(const char *value)
 }
 
 /**
+  * @brief 从 Flash 读取并应用保存的 9 个增益
+  * @note  无值命令 "load"; 兼容 "load=1"。读取不擦写 Flash, 可在任意模式执行。
+  *        没有有效记录或校验失败时返回 false。
+  */
+static bool USB_ApplyLoad(const char *value)
+{
+    if (value != NULL)
+    {
+        uint32_t load;
+
+        if (!USB_ParseUint(value, &load) || (load != 1u))
+        {
+            return false;
+        }
+    }
+
+    return PID_Config_Load();
+}
+
+/**
   * @brief 执行一条已去掉换行的命令
   * @param line 以 '\0' 结尾的命令行
   * @retval true 命令合法且已生效; false 忽略本行
+  * @note  支持 "Key=Value" 和少量无值命令 "save"/"load"; 无值命令后面
+  *        不允许再跟其他字符 (空格除外)。
   */
 static bool USB_Command_Execute(const char *line)
 {
     const char *key_start = line;
-    const char *eq;
     const char *key_end;
-    const char *value;
+    const char *p;
+    const char *value = NULL;
     const USB_CmdEntry_t *entry = NULL;
     char key[16];
     uint32_t key_len;
@@ -365,21 +469,12 @@ static bool USB_Command_Execute(const char *line)
         key_start++;
     }
 
-    eq = key_start;
-    while ((*eq != '\0') && (*eq != '='))
+    key_end = key_start;
+    while ((*key_end != '\0') && (*key_end != '=') && !USB_IsSpace(*key_end))
     {
-        eq++;
-    }
-    if (*eq != '=')
-    {
-        return false;
+        key_end++;
     }
 
-    key_end = eq;
-    while ((key_end > key_start) && USB_IsSpace(key_end[-1]))
-    {
-        key_end--;
-    }
     key_len = (uint32_t)(key_end - key_start);
     if ((key_len == 0u) || (key_len >= sizeof(key)))
     {
@@ -397,10 +492,22 @@ static bool USB_Command_Execute(const char *line)
     }
     key[key_len] = '\0';
 
-    value = eq + 1;
-    while (USB_IsSpace(*value))
+    p = key_end;
+    while (USB_IsSpace(*p))
     {
-        value++;
+        p++;
+    }
+    if (*p == '=')
+    {
+        value = p + 1;
+        while (USB_IsSpace(*value))
+        {
+            value++;
+        }
+    }
+    else if (*p != '\0')
+    {
+        return false;      /* 无值命令后跟了其他字符 */
     }
 
     for (uint32_t i = 0u; i < (sizeof(s_cmd_table) / sizeof(s_cmd_table[0])); i++)
@@ -424,10 +531,18 @@ static bool USB_Command_Execute(const char *line)
         case USB_CMD_ID_SPEED_KP: return USB_ApplyGain(PID_LOOP_SPEED, 0u, value);
         case USB_CMD_ID_SPEED_KI: return USB_ApplyGain(PID_LOOP_SPEED, 1u, value);
         case USB_CMD_ID_SPEED_KD: return USB_ApplyGain(PID_LOOP_SPEED, 2u, value);
+        case USB_CMD_ID_CURR_KP: return USB_ApplyGain(PID_LOOP_CURRENT, 0u, value);
+        case USB_CMD_ID_CURR_KI: return USB_ApplyGain(PID_LOOP_CURRENT, 1u, value);
+        case USB_CMD_ID_CURR_KD: return USB_ApplyGain(PID_LOOP_CURRENT, 2u, value);
         case USB_CMD_ID_ANGLE_REF: return USB_ApplyAngleRef(value);
         case USB_CMD_ID_SPEED_REF: return USB_ApplySpeedRef(value);
+        case USB_CMD_ID_CURR_REF:
+            return (value != NULL) ? USB_ApplyCurrentRef(value) : false;
+        case USB_CMD_ID_CURR_D_REF:
+            return (value != NULL) ? USB_ApplyCurrentDRef(value) : false;
         case USB_CMD_ID_MODE: return USB_ApplyMode(value);
         case USB_CMD_ID_SAVE: return USB_ApplySave(value);
+        case USB_CMD_ID_LOAD: return USB_ApplyLoad(value);
         default: return false;
     }
 }

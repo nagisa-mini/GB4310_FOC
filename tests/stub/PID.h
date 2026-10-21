@@ -20,27 +20,22 @@
 #define PID_MODE_STOP   0u
 #define PID_MODE_ANGLE  1u
 #define PID_MODE_SPEED  2u
+#define PID_MODE_CURRENT 3u
 
 typedef enum {
     PID_LOOP_ANGLE = 0,
-    PID_LOOP_SPEED = 1
+    PID_LOOP_SPEED = 1,
+    PID_LOOP_CURRENT = 2
 } PID_Loop_t;
-
-typedef struct {
-    float Angle_Ref;
-    float Angle_Fdb;
-    float Speed_Ref;
-    float Speed_Fdb;
-    float Curr_Q_Ref;
-    uint8_t mode;
-} PID_RUN_t;
-
-extern PID_RUN_t PID_Run;
 
 bool PID_SetGains(PID_Loop_t loop, float Kp, float Ki, float Kd);
 bool PID_GetGains(PID_Loop_t loop, float *Kp, float *Ki, float *Kd);
 bool PID_SetMode(uint8_t mode);
-void PID_ResetIntegralAll(void);
+uint8_t PID_GetMode(void);
+void PID_SetAngleRef(float rad);
+void PID_SetSpeedRef(float rpm);
+bool PID_SetCurrentRef(float amp);
+bool PID_SetCurrentDRef(float amp);
 
 /* Flash 参数保存接口的测试桩 */
 bool PID_Config_Save(void);

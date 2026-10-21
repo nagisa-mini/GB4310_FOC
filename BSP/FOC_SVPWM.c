@@ -495,14 +495,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             counter = 0;
             PID_Angle_Loop_Isr();
         }
-        /* 1kHz 遥测: "400.00,<转速>,<电流环输出>\r\n"
+        /* 1kHz 遥测: 12 路 PID 数据 (顺序见 PID_TELEM_xxx)
          * 用 Fmt_LineU8 做纯整数 ASCII 格式化, 再一次性写入环形缓冲区;
-         * 不使用 snprintf / 浮点 printf, 避免 1kHz 中断里的高开销。 */
-        const float telemetry[9] = {PID_Run.Angle_Ref, PID_Run.Angle_Fdb, PID_Angle.Out, 
-                                PID_Run.Speed_Ref, PID_Run.Speed_Fdb, PID_Speed.Out, 
-                                PID_Run.Curr_Q_Ref, PID_Curr_Q.Fdb, PID_Curr_Q.Out};
-        uint8_t line[128];
-        const size_t n = Fmt_LineU8(line, sizeof(line), telemetry, 9u, 4u);
+         * 不使用 snprintf / 浮点 printf, 避免 1kHz 中断里的高开销。
+         * 缓冲区按 12 路最坏情况预留: 每路约 10 字符 + 逗号 + CRLF。 */
+        float telemetry[PID_TELEM_COUNT];
+        PID_GetTelemetry(telemetry);
+        uint8_t line[192];
+        const size_t n = Fmt_LineU8(line, sizeof(line), telemetry,
+                                    (uint8_t)PID_TELEM_COUNT, 4u);
         if (n != 0u && RingBuffer_GetFree(&USB_TxBuffer) > n)
         {
             (void)RingBuffer_Write(&USB_TxBuffer, line, (uint32_t)n);

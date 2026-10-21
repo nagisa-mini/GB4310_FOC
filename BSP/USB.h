@@ -18,9 +18,10 @@
  *============================================================================*/
 #define USB_CMD_LINE_MAX        64u         /* 单行缓存大小 (含结尾 '\0') */
 #define USB_CMD_PROCESS_BUDGET  64u         /* 每次空闲调用最多消费的字节数 */
-#define USB_CMD_GAIN_MAX        1000000.0f  /* 增益上限 (角度环/角速度环) */
+#define USB_CMD_GAIN_MAX        1000000.0f  /* 增益上限 (角度环/角速度环/电流环) */
 #define USB_CMD_SPEED_MAX       10000.0f    /* Speed_Ref 绝对值上限 (RPM) */
 #define USB_CMD_ANGLE_MAX       6283.1853f  /* Angle_Ref 绝对值上限 (1000*2π, rad) */
+#define USB_CMD_CURR_MAX        1.9f        /* Curr/Id 绝对值上限 (A), 与相电流量程一致 */
 
 void USB_Init(void);
 
