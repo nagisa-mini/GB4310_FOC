@@ -15,7 +15,8 @@
  *   5. 角度归一化到 (-π, π];
  *   6. 电流模式/电流增益/电流给定范围, 以及无值 save/load 命令;
  *   7. 超长行、USB_RxBuffer 溢出、环形回绕后的重新同步;
- *   8. USB_RxAbort 半行丢弃、单次解析字节预算、空缓冲区调用。
+ *   8. USB_RxAbort 半行丢弃、单次解析字节预算、空缓冲区调用;
+ *   9. 遥测发送任务: CDC 忙/就绪、64 字节分帧、发送失败不消费。
  */
 
 #include <stdio.h>
@@ -25,6 +26,34 @@
 
 #include "USB.h"
 #include "PID.h"
+#include "usbd_cdc_if.h"
+
+/*------------------------------------------------------------------------------
+ * CDC 发送测试桩
+ *---------------------------------------------------------------------------*/
+uint8_t  g_cdc_ready = 1u;              /* 1=上一包已发完 */
+uint8_t  g_cdc_transmit_result = USBD_OK;
+uint8_t  g_cdc_capture[256];
+uint16_t g_cdc_capture_len = 0u;
+
+uint8_t CDC_Transmit_Ready(void)
+{
+    return g_cdc_ready;
+}
+
+uint8_t CDC_Transmit_FS(uint8_t *Buf, uint16_t Len)
+{
+    if (g_cdc_transmit_result != USBD_OK)
+    {
+        return g_cdc_transmit_result;
+    }
+    if (((uint32_t)g_cdc_capture_len + (uint32_t)Len) <= sizeof(g_cdc_capture))
+    {
+        memcpy(g_cdc_capture + g_cdc_capture_len, Buf, Len);
+        g_cdc_capture_len = (uint16_t)(g_cdc_capture_len + Len);
+    }
+    return USBD_OK;
+}
 
 /*------------------------------------------------------------------------------
  * PID 测试桩
@@ -754,6 +783,63 @@ static void TestEmptyProcess(void)
     CHECK_INT(USB_Cmd_ErrCount, 0);
 }
 
+static void TestTxProcess(void)
+{
+    uint8_t data[200];
+
+    ResetAll();
+    for (uint32_t i = 0u; i < sizeof(data); i++)
+    {
+        data[i] = (uint8_t)('A' + (i % 26u));
+    }
+
+    g_cdc_ready = 1u;
+    g_cdc_transmit_result = USBD_OK;
+    g_cdc_capture_len = 0u;
+
+    /* 空缓冲区: 不发包 */
+    USB_TxProcess();
+    CHECK_INT(g_cdc_capture_len, 0);
+
+    /* CDC 忙: 数据留在缓冲区 */
+    CHECK_INT(RingBuffer_Write(&USB_TxBuffer, data, 10u), 10);
+    g_cdc_ready = 0u;
+    USB_TxProcess();
+    CHECK_INT(RingBuffer_GetUsed(&USB_TxBuffer), 10);
+    CHECK_INT(g_cdc_capture_len, 0);
+
+    /* CDC 空闲: 发送 10 字节并在成功后精确消费 */
+    g_cdc_ready = 1u;
+    USB_TxProcess();
+    CHECK_INT(g_cdc_capture_len, 10);
+    CHECK_INT(RingBuffer_GetUsed(&USB_TxBuffer), 0);
+    CHECK(memcmp(g_cdc_capture, data, 10u) == 0);
+
+    /* 200 字节按 64 字节分帧, 4 次发完且顺序不变 */
+    g_cdc_capture_len = 0u;
+    CHECK_INT(RingBuffer_Write(&USB_TxBuffer, data, 200u), 200);
+    for (uint32_t i = 0u; i < 4u; i++)
+    {
+        USB_TxProcess();
+    }
+    CHECK_INT(g_cdc_capture_len, 200);
+    CHECK_INT(RingBuffer_GetUsed(&USB_TxBuffer), 0);
+    CHECK(memcmp(g_cdc_capture, data, 200u) == 0);
+
+    /* CDC 发送失败: 不消费, 下一轮仍可完整发送 */
+    g_cdc_capture_len = 0u;
+    CHECK_INT(RingBuffer_Write(&USB_TxBuffer, data, 5u), 5);
+    g_cdc_transmit_result = 1u;     /* 非 USBD_OK */
+    USB_TxProcess();
+    CHECK_INT(RingBuffer_GetUsed(&USB_TxBuffer), 5);
+    CHECK_INT(g_cdc_capture_len, 0);
+
+    g_cdc_transmit_result = USBD_OK;
+    USB_TxProcess();
+    CHECK_INT(RingBuffer_GetUsed(&USB_TxBuffer), 0);
+    CHECK_INT(g_cdc_capture_len, 5);
+}
+
 int main(void)
 {
     printf("== USB 命令解析测试 ==\n");
@@ -772,6 +858,7 @@ int main(void)
     TestProcessBudget();
     TestRingWrap();
     TestEmptyProcess();
+    TestTxProcess();
 
     printf("\n检查项: %u, 失败: %u\n", g_checks, g_fails);
     if (g_fails != 0u)

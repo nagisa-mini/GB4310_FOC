@@ -2,25 +2,27 @@
 
 #include <PID.h>
 
-RingBuffer_t USB_TxBuffer; // USB 发送环形缓冲区
-RingBuffer_t USB_RxBuffer; // USB 接收环形缓冲区
-static uint8_t USB_TxPool[USB_TX_BUFFER_SIZE]; // USB 发送缓冲池
-static uint8_t USB_RxPool[USB_RX_BUFFER_SIZE]; // USB 接收缓冲池
+/*==============================================================================
+ * 模块内部状态
+ *============================================================================*/
+
+RingBuffer_t USB_TxBuffer;                      /* USB 发送环形缓冲区 */
+RingBuffer_t USB_RxBuffer;                      /* USB 接收环形缓冲区 */
+static uint8_t USB_TxPool[USB_TX_BUFFER_SIZE];  /* 发送缓冲池 */
+static uint8_t USB_RxPool[USB_RX_BUFFER_SIZE];  /* 接收缓冲池 */
 
 /* 调试计数 */
-volatile uint32_t USB_Cmd_OkCount = 0u;        // 成功执行的命令行数
-volatile uint32_t USB_Cmd_ErrCount = 0u;       // 解析失败/超长/超范围的行数
-volatile uint32_t USB_Rx_OverflowCount = 0u;   // USB_RxBuffer 满而丢弃的包数
+volatile uint32_t USB_Cmd_OkCount = 0u;         /* 成功执行的命令行数 */
+volatile uint32_t USB_Cmd_ErrCount = 0u;        /* 解析失败/超长/超范围的行数 */
+volatile uint32_t USB_Rx_OverflowCount = 0u;    /* USB_RxBuffer 满而丢弃的包数 */
 
-/*==============================================================================
- * 命令解析状态 (仅主循环访问)
- *============================================================================*/
-static char s_line[USB_CMD_LINE_MAX];          // 当前行缓存
-static uint8_t s_line_len = 0u;                // 当前行长度 (不含 '\0')
-static bool s_line_overflow = false;           // 当前行超长
-static bool s_discard = false;                 // 丢弃到下一个换行 (溢出/复位后重新同步)
-static volatile bool s_rx_overflow = false;    // 中断置位: 有包因缓冲区满被丢弃
-static volatile bool s_rx_abort = false;       // USB 复位: 丢弃未完成的半行
+/* 命令解析状态 (仅主循环访问) */
+static char s_line[USB_CMD_LINE_MAX];           /* 当前行缓存 */
+static uint8_t s_line_len = 0u;                 /* 当前行长度 (不含 '\0') */
+static bool s_line_overflow = false;            /* 当前行超长 */
+static bool s_discard = false;                  /* 丢弃到下一个换行以重新同步 */
+static volatile bool s_rx_overflow = false;     /* 中断置位: 有包因缓冲区满被丢弃 */
+static volatile bool s_rx_abort = false;        /* USB 复位: 丢弃未完成的半行 */
 
 /*==============================================================================
  * 命令表
@@ -45,45 +47,45 @@ typedef enum {
 } USB_CmdId_t;
 
 typedef struct {
-    const char *name;       // 小写键名 (输入键会先转小写)
+    const char *name;       /* 小写键名 (输入键会先转小写) */
     USB_CmdId_t id;
 } USB_CmdEntry_t;
 
 static const USB_CmdEntry_t s_cmd_table[] = {
-    { "angle_kp",   USB_CMD_ID_ANGLE_KP  },
-    { "angle_ki",   USB_CMD_ID_ANGLE_KI  },
-    { "angle_kd",   USB_CMD_ID_ANGLE_KD  },
-    { "speed_kp",   USB_CMD_ID_SPEED_KP  },
-    { "speed_ki",   USB_CMD_ID_SPEED_KI  },
-    { "speed_kd",   USB_CMD_ID_SPEED_KD  },
-    { "curr_kp",    USB_CMD_ID_CURR_KP   },  // 电流环 d/q 共用
-    { "curr_ki",    USB_CMD_ID_CURR_KI   },
-    { "curr_kd",    USB_CMD_ID_CURR_KD   },
-    { "current_kp", USB_CMD_ID_CURR_KP   },  // 别名
-    { "current_ki", USB_CMD_ID_CURR_KI   },
-    { "current_kd", USB_CMD_ID_CURR_KD   },
-    { "angle",      USB_CMD_ID_ANGLE_REF },  // 兼容 Angle_Ref 的短名
-    { "angle_ref",  USB_CMD_ID_ANGLE_REF },
-    { "speed",      USB_CMD_ID_SPEED_REF },  // 上位机示例 "Speed=1.0"
-    { "speed_ref",  USB_CMD_ID_SPEED_REF },
-    { "curr",       USB_CMD_ID_CURR_REF  },  // 电流模式 q 轴电流给定
-    { "curr_ref",   USB_CMD_ID_CURR_REF  },
-    { "current",    USB_CMD_ID_CURR_REF  },
-    { "current_ref", USB_CMD_ID_CURR_REF },
-    { "iq",         USB_CMD_ID_CURR_REF  },
-    { "iq_ref",     USB_CMD_ID_CURR_REF  },
-    { "id",         USB_CMD_ID_CURR_D_REF },  // 电流模式 d 轴电流给定
-    { "id_ref",     USB_CMD_ID_CURR_D_REF },
-    { "curr_d",     USB_CMD_ID_CURR_D_REF },
-    { "curr_d_ref", USB_CMD_ID_CURR_D_REF },
-    { "current_d",  USB_CMD_ID_CURR_D_REF },
+    { "angle_kp",      USB_CMD_ID_ANGLE_KP   },
+    { "angle_ki",      USB_CMD_ID_ANGLE_KI   },
+    { "angle_kd",      USB_CMD_ID_ANGLE_KD   },
+    { "speed_kp",      USB_CMD_ID_SPEED_KP   },
+    { "speed_ki",      USB_CMD_ID_SPEED_KI   },
+    { "speed_kd",      USB_CMD_ID_SPEED_KD   },
+    { "curr_kp",       USB_CMD_ID_CURR_KP    },     /* 电流环 d/q 共用 */
+    { "curr_ki",       USB_CMD_ID_CURR_KI    },
+    { "curr_kd",       USB_CMD_ID_CURR_KD    },
+    { "current_kp",    USB_CMD_ID_CURR_KP    },     /* 别名 */
+    { "current_ki",    USB_CMD_ID_CURR_KI    },
+    { "current_kd",    USB_CMD_ID_CURR_KD    },
+    { "angle",         USB_CMD_ID_ANGLE_REF  },     /* Angle_Ref 短名 */
+    { "angle_ref",     USB_CMD_ID_ANGLE_REF  },
+    { "speed",         USB_CMD_ID_SPEED_REF  },     /* 上位机示例 "Speed=1.0" */
+    { "speed_ref",     USB_CMD_ID_SPEED_REF  },
+    { "curr",          USB_CMD_ID_CURR_REF   },     /* 电流模式 q 轴给定 */
+    { "curr_ref",      USB_CMD_ID_CURR_REF   },
+    { "current",       USB_CMD_ID_CURR_REF   },
+    { "current_ref",   USB_CMD_ID_CURR_REF   },
+    { "iq",            USB_CMD_ID_CURR_REF   },
+    { "iq_ref",        USB_CMD_ID_CURR_REF   },
+    { "id",            USB_CMD_ID_CURR_D_REF },     /* 电流模式 d 轴给定 */
+    { "id_ref",        USB_CMD_ID_CURR_D_REF },
+    { "curr_d",        USB_CMD_ID_CURR_D_REF },
+    { "curr_d_ref",    USB_CMD_ID_CURR_D_REF },
+    { "current_d",     USB_CMD_ID_CURR_D_REF },
     { "current_d_ref", USB_CMD_ID_CURR_D_REF },
-    { "d_curr",     USB_CMD_ID_CURR_D_REF },
-    { "d_curr_ref", USB_CMD_ID_CURR_D_REF },
-    { "dcurr",      USB_CMD_ID_CURR_D_REF },
-    { "mode",       USB_CMD_ID_MODE      },
-    { "save",       USB_CMD_ID_SAVE      },  // 无值命令: Save
-    { "load",       USB_CMD_ID_LOAD      },  // 无值命令: Load
+    { "d_curr",        USB_CMD_ID_CURR_D_REF },
+    { "d_curr_ref",    USB_CMD_ID_CURR_D_REF },
+    { "dcurr",         USB_CMD_ID_CURR_D_REF },
+    { "mode",          USB_CMD_ID_MODE       },
+    { "save",          USB_CMD_ID_SAVE       },     /* 无值命令: Save */
+    { "load",          USB_CMD_ID_LOAD       },     /* 无值命令: Load */
 };
 
 /*==============================================================================
@@ -96,8 +98,8 @@ static bool USB_IsSpace(char c)
 }
 
 /**
-  * @brief 比较两个已转小写的 C 字符串
-  */
+ * @brief  比较两个已转小写的 C 字符串
+ */
 static bool USB_KeyEqual(const char *key, const char *name)
 {
     while ((*key != '\0') && (*name != '\0'))
@@ -113,10 +115,10 @@ static bool USB_KeyEqual(const char *key, const char *name)
 }
 
 /**
-  * @brief 解析十进制浮点 (不使用 strtof/sscanf)
-  * @note  支持可选 +/-、整数/小数、前后空格; 不支持指数;
-  *        总有效数字限制 9 位, 超范围/溢出/多余字符返回 false。
-  */
+ * @brief  解析十进制浮点 (不使用 strtof / sscanf)
+ * @note   支持可选 +/-、整数/小数、前后空格; 不支持指数;
+ *         总有效数字限制 9 位, 超范围/溢出/多余字符返回 false。
+ */
 static bool USB_ParseFloat(const char *s, float *out)
 {
     if ((s == NULL) || (out == NULL))
@@ -192,9 +194,9 @@ static bool USB_ParseFloat(const char *s, float *out)
 }
 
 /**
-  * @brief 解析十进制非负整数 (用于 Mode)
-  * @note  仅数字, 前后允许空格; 最多 9 位; 多余字符返回 false。
-  */
+ * @brief  解析十进制非负整数 (用于 Mode)
+ * @note   仅数字, 前后允许空格; 最多 9 位; 多余字符返回 false。
+ */
 static bool USB_ParseUint(const char *s, uint32_t *out)
 {
     if ((s == NULL) || (out == NULL))
@@ -239,8 +241,8 @@ static bool USB_ParseUint(const char *s, uint32_t *out)
 }
 
 /**
-  * @brief 设置单个增益, 保留同组另外两个参数
-  */
+ * @brief  设置单个增益, 保留同组另外两个参数
+ */
 static bool USB_ApplyGain(PID_Loop_t loop, uint8_t gain_index, const char *value)
 {
     float v;
@@ -273,10 +275,10 @@ static bool USB_ApplyGain(PID_Loop_t loop, uint8_t gain_index, const char *value
 }
 
 /**
-  * @brief 设置角度给定并归一化到 (-π, π]
-  * @note  归一化后交给 PID_SetAngleRef(); 该接口在给定值实际变化时
-  *        清空角度/角速度/电流 d/q 四个积分项, 重复发送相同值不清零。
-  */
+ * @brief  设置角度给定并归一化到 (-π, π]
+ * @note   归一化后交给 PID_SetAngleRef(); 给定值实际变化时清空角度/角速度/
+ *         电流 d/q 四个积分项, 重复发送相同值不清零。
+ */
 static bool USB_ApplyAngleRef(const char *value)
 {
     float v;
@@ -304,10 +306,10 @@ static bool USB_ApplyAngleRef(const char *value)
 }
 
 /**
-  * @brief 设置角速度给定 (RPM)
-  * @note  交给 PID_SetSpeedRef(); 给定值实际变化时清空四个积分项,
-  *        重复发送相同值不清零。
-  */
+ * @brief  设置角速度给定 (RPM)
+ * @note   交给 PID_SetSpeedRef(); 给定值实际变化时清空四个积分项,
+ *         重复发送相同值不清零。
+ */
 static bool USB_ApplySpeedRef(const char *value)
 {
     float v;
@@ -326,8 +328,8 @@ static bool USB_ApplySpeedRef(const char *value)
 }
 
 /**
-  * @brief 设置运行模式
-  */
+ * @brief  设置运行模式
+ */
 static bool USB_ApplyMode(const char *value)
 {
     uint32_t mode;
@@ -345,8 +347,8 @@ static bool USB_ApplyMode(const char *value)
 }
 
 /**
-  * @brief 电流给定范围检查 (d/q 共用, 留 0.1mA 浮点解析容差)
-  */
+ * @brief  电流给定范围检查 (d/q 共用, 留浮点解析容差)
+ */
 static bool USB_CurrentInRange(float v)
 {
     const float limit = USB_CMD_CURR_MAX + 1.0e-4f;
@@ -355,9 +357,9 @@ static bool USB_CurrentInRange(float v)
 }
 
 /**
-  * @brief 设置 q 轴电流给定 (仅电流模式)
-  * @note  电流模式用于调试 20kHz 电流环; q 轴对应转矩。
-  */
+ * @brief  设置 q 轴电流给定 (仅电流模式)
+ * @note   电流模式用于调试 20 kHz 电流环; q 轴对应转矩。
+ */
 static bool USB_ApplyCurrentRef(const char *value)
 {
     float v;
@@ -379,9 +381,9 @@ static bool USB_ApplyCurrentRef(const char *value)
 }
 
 /**
-  * @brief 设置 d 轴电流给定 (仅电流模式)
-  * @note  电流模式用于调试 20kHz 电流环; d 轴对应励磁分量。
-  */
+ * @brief  设置 d 轴电流给定 (仅电流模式)
+ * @note   电流模式用于调试 20 kHz 电流环; d 轴对应励磁分量。
+ */
 static bool USB_ApplyCurrentDRef(const char *value)
 {
     float v;
@@ -403,11 +405,11 @@ static bool USB_ApplyCurrentDRef(const char *value)
 }
 
 /**
-  * @brief 保存当前 PID 增益到 Flash
-  * @note  新协议为无值命令 "save"; 为兼容旧上位机仍接受 "save=1"。
-  *        要求当前为 Mode=0 (STOP), 避免 Flash 擦除阻塞 20kHz 电流环时
-  *        电机仍被驱动。
-  */
+ * @brief  保存当前 PID 增益到 Flash
+ * @note   无值命令 "save"; 兼容旧上位机的 "save=1"。
+ *         要求当前为 Mode=0 (STOP), 避免 Flash 擦除阻塞 20 kHz 电流环时
+ *         电机仍被驱动。
+ */
 static bool USB_ApplySave(const char *value)
 {
     if (value != NULL)
@@ -428,10 +430,10 @@ static bool USB_ApplySave(const char *value)
 }
 
 /**
-  * @brief 从 Flash 读取并应用保存的 9 个增益
-  * @note  无值命令 "load"; 兼容 "load=1"。读取不擦写 Flash, 可在任意模式执行。
-  *        没有有效记录或校验失败时返回 false。
-  */
+ * @brief  从 Flash 读取并应用保存的 9 个增益
+ * @note   无值命令 "load"; 兼容 "load=1"。读取不擦写 Flash, 任意模式可执行;
+ *         没有有效记录或校验失败时返回 false。
+ */
 static bool USB_ApplyLoad(const char *value)
 {
     if (value != NULL)
@@ -448,12 +450,12 @@ static bool USB_ApplyLoad(const char *value)
 }
 
 /**
-  * @brief 执行一条已去掉换行的命令
-  * @param line 以 '\0' 结尾的命令行
-  * @retval true 命令合法且已生效; false 忽略本行
-  * @note  支持 "Key=Value" 和少量无值命令 "save"/"load"; 无值命令后面
-  *        不允许再跟其他字符 (空格除外)。
-  */
+ * @brief  执行一条已去掉换行的命令
+ * @param  line 以 '\0' 结尾的命令行
+ * @retval true 命令合法且已生效; false 忽略本行
+ * @note   支持 "Key=Value" 和少量无值命令 "save"/"load"; 无值命令后
+ *         不允许再跟其他字符 (空格除外)。
+ */
 static bool USB_Command_Execute(const char *line)
 {
     const char *key_start = line;
@@ -548,8 +550,8 @@ static bool USB_Command_Execute(const char *line)
 }
 
 /**
-  * @brief 向行状态机喂一个字节
-  */
+ * @brief  向行状态机喂一个字节
+ */
 static void USB_Command_FeedByte(uint8_t byte)
 {
     char c = (char)byte;
@@ -692,5 +694,34 @@ void USB_Command_Process(void)
             USB_Command_FeedByte(chunk[i]);
         }
         budget -= n;
+    }
+}
+
+/**
+ * @brief  发送任务: 上一包发完后从 USB_TxBuffer 取一帧交给 CDC
+ * @note   必须先确认 CDC 空闲再取数据: 否则 CDC_Transmit_FS 返回 BUSY 时
+ *         数据已被移出缓冲区, 数据流会丢字节 (例如小数点), 上位机可能把
+ *         400.00 解析成 40000。发送成功后用 Advance 精确消费, 不能用
+ *         RingBuffer_Read: 折返时它只消费连续一段, 会造成重复发送。
+ */
+void USB_TxProcess(void)
+{
+    uint8_t stage[64];
+    uint32_t n;
+
+    if (RingBuffer_IsEmpty(&USB_TxBuffer) || (CDC_Transmit_Ready() == 0u))
+    {
+        return;
+    }
+
+    n = RingBuffer_GetUsed(&USB_TxBuffer);
+    if (n > (uint32_t)sizeof(stage))
+    {
+        n = (uint32_t)sizeof(stage);
+    }
+    n = RingBuffer_Peek(&USB_TxBuffer, stage, n);
+    if ((n != 0u) && (CDC_Transmit_FS(stage, (uint16_t)n) == USBD_OK))
+    {
+        RingBuffer_Advance(&USB_TxBuffer, n);
     }
 }

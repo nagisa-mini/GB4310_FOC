@@ -3,6 +3,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include "MT6826S.h"
 
 /*==============================================================================
  * PID 三环闭环: 角度环 → 角速度环 → 电流环 d/q

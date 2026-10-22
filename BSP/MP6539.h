@@ -4,9 +4,10 @@
 #include "gpio.h"
 #include "dac.h"
 
-extern float MT6826S_Angle;
-extern uint8_t MT6826S_Status;
+/*==============================================================================
+ * MP6539 三相栅极驱动: 使能控制与 DAC 输出
+ *============================================================================*/
 
-void MP6539_Init(void);
+void MP6539_Init(void);     /* 释放 nSLEEP 使能, 启动 DAC 通道 1 */
 
-#endif
+#endif /* MP6539_H */

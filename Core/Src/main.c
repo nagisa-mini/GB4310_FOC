@@ -33,13 +33,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "ADC_Sample.h"
-#include "MT6826S.h"
-#include "FOC_SVPWM.h"
+#include "System.h"
 #include "USB.h"
-#include "usbd_cdc_if.h"
-#include "MP6539.h"
-#include "PID.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -116,46 +111,17 @@ int main(void)
   MX_USB_Device_Init();
   MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
-  FOC_Init();
-  MP6539_Init();
-  ADC_Sample_Init();
-  ADC_Sample_Start();
-  MT6826S_Init();
-  //ElAngle_Calibration();
-  MT6826S_Start();
-  PID_3Loop_Init();
-  (void)PID_Config_Load();      /* 读取 Flash 中保存的 PID 增益; 无记录则保留默认值 */
-  FOC_Start();
+  /* BSP 模块初始化: FOC → 栅极驱动 → ADC 采样 → 编码器 → PID 三环 */
+  System_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  uint8_t tx_stage[64];
   while (1)
   {
-    /* 空闲任务: 解析上位机命令 (非阻塞, 单次有字节预算) */
+    /* 空闲任务: 命令解析 + 遥测发送 (均为非阻塞) */
     USB_Command_Process();
-
-    /* 关键: 先确认 USB 上一包已发完, 再从环形缓冲区取数据。
-     * 否则 CDC_Transmit_FS 返回 BUSY 时, RingBuffer_Read 已经把数据
-     * 移出缓冲区, 数据流中会丢失若干字节(例如小数点), 导致上位机
-     * 解析出 400.00 -> 40000 这类异常值。 */
-    if (!RingBuffer_IsEmpty(&USB_TxBuffer) && (CDC_Transmit_Ready() != 0u))
-    {
-      uint32_t n = RingBuffer_GetUsed(&USB_TxBuffer);
-      if (n > (uint32_t)sizeof(tx_stage))
-      {
-        n = (uint32_t)sizeof(tx_stage);
-      }
-      n = RingBuffer_Peek(&USB_TxBuffer, tx_stage, n);
-      if ((n != 0u) && (CDC_Transmit_FS(tx_stage, (uint16_t)n) == USBD_OK))
-      {
-        /* 精确消费 n 字节。不能用 RingBuffer_Read 代替: 数据折返时
-         * Read 只消费连续的一段, 会小于 Peek 返回的长度, 造成折返处
-         * 的字节被重复发送、上位机出现半行/错乱。 */
-        RingBuffer_Advance(&USB_TxBuffer, n);
-      }
-    }
+    USB_TxProcess();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

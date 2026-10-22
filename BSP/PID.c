@@ -1,10 +1,5 @@
 #include "PID.h"
 
-#include "MT6826S.h"    /* DEG_TO_RAD / MT6826S_GetData */
-
-#include <stddef.h>
-#include <string.h>
-
 /*==============================================================================
  * 三环默认增益 (按电机实测整定, 单位与各环输入输出一致)
  *   角度环:   rad → RPM
@@ -24,7 +19,7 @@
  *       的电流脉冲, 零速时又没有反电动势阻尼, 表现为高频抖动/异响。
  *       建议 Kp <= 0.01、Ki=0 起步; 需要更高刚度时先做测速滤波/加长测速窗口。
  */
-#define LOOP_SPEED_KP        0.0165f
+#define LOOP_SPEED_KP        0.01f
 #define LOOP_SPEED_KI        1.0f
 #define LOOP_SPEED_KD        0.0f
 #define LOOP_SPEED_I_LIMIT   1.27f        /* 积分限幅 */

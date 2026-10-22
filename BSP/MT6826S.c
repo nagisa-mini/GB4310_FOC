@@ -1,5 +1,9 @@
 #include "MT6826S.h"
 
+/*==============================================================================
+ * 模块内部状态
+ *============================================================================*/
+
 /* 工作模式 (MT6826S_State.MODE) */
 enum
 {
@@ -39,13 +43,9 @@ static uint8_t Continue_ReadAngle_State = READ_STATE_IDLE;
  *============================================================================*/
 
 /**
-  * @brief  组装 16 位寄存器地址命令
-  * @note   命令帧格式: [0] = 命令字 | 地址[11:8], [1] = 地址[7:0]
-  * @param  tx_buf 输出缓冲 (至少 2 字节)
-  * @param  cmd 命令字, 取值 MT6826S_CMD_xxx
-  * @param  addr 寄存器地址
-  * @retval None
-  */
+ * @brief  组装 16 位寄存器地址命令
+ * @note   帧格式: [0] = 命令字 | 地址[11:8], [1] = 地址[7:0]
+ */
 static void MT6826S_BuildCmd(uint8_t *tx_buf, uint8_t cmd, uint16_t addr)
 {
     tx_buf[0] = (uint8_t)(cmd | ((addr >> 8) & 0x0FU));
@@ -53,11 +53,9 @@ static void MT6826S_BuildCmd(uint8_t *tx_buf, uint8_t cmd, uint16_t addr)
 }
 
 /**
-  * @brief  将角度归约到 [0, 2π)
-  * @note   用乘法加截断代替 fmodf; 末尾的保险减法用于吸收浮点舍入误差
-  * @param  angle 待归约角度 (rad)
-  * @retval 归约后的角度, 范围 [0, 2π)
-  */
+ * @brief  将角度归约到 [0, 2π)
+ * @note   用乘法 + 截断代替 fmodf; 末尾保险减法用于吸收浮点舍入误差。
+ */
 static float NormalizeAngle(float angle)
 {
     if (angle >= MT_2PI)
@@ -87,12 +85,9 @@ static float NormalizeAngle(float angle)
  *============================================================================*/
 
 /**
-  * @brief  初始化角度读取触发源
-  * @note   配置 TIM1 CC4 并开启其中断, 作为角度读取的时基;
-  *         ADC_Sample_Init() 已完成同样的启动, 正常流程下无需重复调用
-  * @param  None
-  * @retval None
-  */
+ * @brief  初始化角度读取触发源 (TIM1 CC4)
+ * @note   ADC_Sample_Init() 已完成同样的启动, 正常流程下无需重复调用。
+ */
 void MT6826S_Init(void)
 {
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, MT_TRIG_CC4);
@@ -100,11 +95,8 @@ void MT6826S_Init(void)
 }
 
 /**
-  * @brief  开始连续读取角度
-  * @note   由 TIM1 CC4 中断按 PWM 周期触发读取
-  * @param  None
-  * @retval None
-  */
+ * @brief  开始连续读取角度 (由 TIM1 CC4 中断按 PWM 周期触发)
+ */
 void MT6826S_Start(void)
 {
     MT6826S_State.MODE = MT_MODE_RUN;
@@ -112,10 +104,8 @@ void MT6826S_Start(void)
 }
 
 /**
-  * @brief  停止连续读取角度
-  * @param  None
-  * @retval None
-  */
+ * @brief  停止连续读取角度
+ */
 void MT6826S_Stop(void)
 {
     MT6826S_State.MODE = MT_MODE_IDLE;
@@ -123,13 +113,11 @@ void MT6826S_Stop(void)
 }
 
 /**
-  * @brief  发起一次角度读取 (拉低片选并发送读命令)
-  * @note   仅在上一次读取结束 (状态机空闲) 时发起, 发送完成后由
-  *         HAL_SPI_TxCpltCallback 接力启动接收; 发送缓冲为模块内静态变量,
-  *         供 DMA 在函数返回后继续读取
-  * @param  None
-  * @retval None
-  */
+ * @brief  发起一次角度读取 (拉低片选并发送读命令)
+ * @note   仅在上一次读取结束 (状态机空闲) 时发起; 发送完成后由
+ *         HAL_SPI_TxCpltCallback 接力启动接收。发送缓冲为模块内静态变量,
+ *         供 DMA 在函数返回后继续读取。
+ */
 void MT6826S_Continue_ReadAngle(void)
 {
     if (Continue_ReadAngle_State != READ_STATE_IDLE)
@@ -144,12 +132,10 @@ void MT6826S_Continue_ReadAngle(void)
 }
 
 /**
-  * @brief  读取角度数据
-  * @note   读取在临界区内完成, 防止 SPI 回调在读取期间更新数据
-  * @param  cmd 通道选择位, 可取 MT6826S_CMD_ANGLE (机械角, 0~360°) /
-  *             MT6826S_CMD_ELANGLE (电角度, 0~2π)
-  * @retval 对应角度值; cmd 无效时返回 0
-  */
+ * @brief  读取角度数据
+ * @param  cmd MT6826S_CMD_ANGLE (机械角 0~360°) / MT6826S_CMD_ELANGLE (电角度 0~2π)
+ * @retval 对应角度值; cmd 无效时返回 0
+ */
 float MT6826S_GetData(uint8_t cmd)
 {
     float value = 0.0f;
@@ -171,12 +157,10 @@ float MT6826S_GetData(uint8_t cmd)
  *============================================================================*/
 
 /**
-  * @brief  TIM1 CC4 比较中断回调 (载波峰值处)
-  * @note   仅在计数器递减 (峰值刚过) 且处于运行模式时发起角度读取,
-  *         采样点与 ADC 注入组保持一致
-  * @param  htim TIM 句柄, 仅响应 TIM1 通道 4
-  * @retval None
-  */
+ * @brief  TIM1 CC4 比较中断回调 (载波峰值处)
+ * @note   仅在计数器递减 (峰值刚过) 且处于运行模式时发起角度读取,
+ *         采样点与 ADC 注入组保持一致。
+ */
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance != TIM1 || htim->Channel != HAL_TIM_ACTIVE_CHANNEL_4)
@@ -191,11 +175,8 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
 }
 
 /**
-  * @brief  SPI 发送完成回调 (读命令已发出)
-  * @note   仅在运行模式且状态机等待发送完成时启动 DMA 接收
-  * @param  hspi SPI 句柄, 仅响应 hspi3
-  * @retval None
-  */
+ * @brief  SPI 发送完成回调 (读命令已发出) → 启动 DMA 接收
+ */
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     if (hspi != &hspi3 || MT6826S_State.MODE != MT_MODE_RUN || Continue_ReadAngle_State != READ_STATE_CMD)
@@ -208,12 +189,9 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 }
 
 /**
-  * @brief  SPI 接收完成回调 (角度帧接收完毕)
-  * @note   校验硬件 CRC, 通过则换算机械角与电角度; 无论是否通过都会释放片选
-  *         并回到空闲状态; 两个角度在同一临界区内更新, 保证读取端二者同帧
-  * @param  hspi SPI 句柄, 仅响应 hspi3
-  * @retval None
-  */
+ * @brief  SPI 接收完成回调: 校验 CRC 并换算机械角/电角度
+ * @note   校验通过才更新角度; 无论是否通过都释放片选并回到空闲状态。
+ */
 void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     float angle;
@@ -241,10 +219,8 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
  *============================================================================*/
 
 /**
-  * @brief  读单个寄存器
-  * @param  addr 寄存器地址
-  * @retval 寄存器值
-  */
+ * @brief  读单个寄存器
+ */
 static uint8_t MT6826S_ReadReg(uint16_t addr)
 {
     uint8_t tx_cmd[2];
@@ -261,11 +237,8 @@ static uint8_t MT6826S_ReadReg(uint16_t addr)
 }
 
 /**
-  * @brief  写单个寄存器
-  * @param  addr 寄存器地址
-  * @param  data 待写入数据
-  * @retval None
-  */
+ * @brief  写单个寄存器
+ */
 static void MT6826S_WriteReg(uint16_t addr, uint8_t data)
 {
     uint8_t tx_buf[3];
@@ -279,12 +252,10 @@ static void MT6826S_WriteReg(uint16_t addr, uint8_t data)
 }
 
 /**
-  * @brief  读取 15 位原始机械角 (阻塞)
-  * @note   分两次读寄存器: 0x003 取 ANGLE[14:7], 0x004 取左对齐的 ANGLE[6:0],
-  *         合并为 15 位原始角 (0~32767)
-  * @param  None
-  * @retval 15 位原始角度值
-  */
+ * @brief  读取 15 位原始机械角 (阻塞)
+ * @note   分两次读寄存器: 0x003 取 ANGLE[14:7], 0x004 取左对齐的 ANGLE[6:0],
+ *         合并为 15 位原始角 (0~32767)。
+ */
 static uint16_t MT6826S_ReadAngle(void)
 {
     uint8_t tx_cmd[2];
@@ -309,12 +280,11 @@ static uint16_t MT6826S_ReadAngle(void)
 }
 
 /**
-  * @brief  烧录 EEPROM 并等待完成
-  * @note   命令地址位全 0; 芯片以 MT6826S_EEPROM_ACK 应答后,
-  *         轮询 EE_STATUS 的 EE_DONE 位直至超时
-  * @param  None
-  * @retval 0=成功, 1=芯片未确认烧录命令, 2=等待 EE_DONE 超时
-  */
+ * @brief  烧录 EEPROM 并等待完成
+ * @note   命令地址位全 0; 芯片以 MT6826S_EEPROM_ACK 应答后,
+ *         轮询 EE_STATUS 的 EE_DONE 位直至超时。
+ * @retval 0=成功, 1=芯片未确认烧录命令, 2=等待 EE_DONE 超时
+ */
 static uint8_t MT6826S_BurnEEPROM(void)
 {
     uint8_t tx_cmd[2];
@@ -352,12 +322,11 @@ static uint8_t MT6826S_BurnEEPROM(void)
  *============================================================================*/
 
 /**
-  * @brief  写入 12 位零点位置并烧录
-  * @note   ZERO_POS 与 Z_PUL_WID 共用一个字节, 写入前先读回并保留 Z_PUL_WID;
-  *         写 0x00A 时 ZERO_POS[3:0] 位于高 4 位, 故需先左移 4 位
-  * @param  raw_angle_15bit 15 位原始角度值
-  * @retval 同 MT6826S_BurnEEPROM(): 0=成功, 1=未确认, 2=超时
-  */
+ * @brief  写入 12 位零点位置并烧录
+ * @note   ZERO_POS 与 Z_PUL_WID 共用一个字节, 写入前先读回并保留 Z_PUL_WID;
+ *         写 0x00A 时 ZERO_POS[3:0] 位于高 4 位, 故需先左移 4 位。
+ * @retval 同 MT6826S_BurnEEPROM(): 0=成功, 1=未确认, 2=超时
+ */
 static uint8_t MT6826S_SaveZeroPos(uint16_t raw_angle_15bit)
 {
     uint16_t zero_pos_12bit;
@@ -382,13 +351,10 @@ static uint8_t MT6826S_SaveZeroPos(uint16_t raw_angle_15bit)
 }
 
 /**
-  * @brief  电角度零点校准 (阻塞)
-  * @note   流程: 由 d 轴电流把转子对齐到电角度 0 → 清零 ZERO_POS →
-  *         等待芯片稳定 (>100ms) → 读回当前角度写入零点并烧录;
-  *         全程将 MODE 置为校准态, 暂停连续角度读取
-  * @param  None
-  * @retval None
-  */
+ * @brief  电角度零点校准 (阻塞)
+ * @note   流程: d 轴电压把转子对齐到电角度 0 → 清零 ZERO_POS → 等待芯片稳定
+ *         (>100 ms) → 读回当前角度写入零点并烧录。全程暂停连续角度读取。
+ */
 void ElAngle_Calibration(void)
 {
     uint16_t raw_angle = 0U;
