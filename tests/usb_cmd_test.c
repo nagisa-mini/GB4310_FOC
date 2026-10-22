@@ -13,7 +13,7 @@
  *   3. 大小写、Key/Value 两侧空格、短名与 *_Ref/Current 别名;
  *   4. 非法 Key/Value、缺 '='、空值、指数、负数增益、超范围、未知模式;
  *   5. 角度归一化到 (-π, π];
- *   6. 电流模式/电流增益/电流给定范围, 以及无值 save/load 命令;
+ *   6. 电流模式/电流增益/d/q 电流给定范围, 以及无值 save/load/restart 命令;
  *   7. 超长行、USB_RxBuffer 溢出、环形回绕后的重新同步;
  *   8. USB_RxAbort 半行丢弃、单次解析字节预算、空缓冲区调用;
  *   9. 遥测发送任务: CDC 忙/就绪、64 字节分帧、发送失败不消费。
@@ -74,6 +74,7 @@ static unsigned g_config_save_calls = 0u;
 static bool g_config_save_result = true;
 static unsigned g_config_load_calls = 0u;
 static bool g_config_load_result = true;
+static unsigned g_restart_calls = 0u;
 static uint8_t g_last_mode = 0u;
 
 bool PID_GetGains(PID_Loop_t loop, float *Kp, float *Ki, float *Kd)
@@ -197,6 +198,11 @@ bool PID_Config_IsLoaded(void)
     return false;
 }
 
+void MP6539_Restart(void)
+{
+    g_restart_calls++;
+}
+
 /*------------------------------------------------------------------------------
  * 测试辅助
  *---------------------------------------------------------------------------*/
@@ -293,6 +299,7 @@ static void ResetAll(void)
     g_config_save_result = true;
     g_config_load_calls = 0u;
     g_config_load_result = true;
+    g_restart_calls = 0u;
     g_last_mode = 0u;
 }
 
@@ -721,6 +728,28 @@ static void TestSaveCommand(void)
     CHECK_INT(USB_Cmd_ErrCount, 11);
 }
 
+static void TestRestartCommand(void)
+{
+    ResetAll();
+
+    /* 无值命令, 大小写/前后空格均可 */
+    FeedLine("restart\r\n");
+    CHECK_INT(g_restart_calls, 1);
+    FeedLine("  ReStart  \r\n");
+    CHECK_INT(g_restart_calls, 2);
+    CHECK_INT(USB_Cmd_OkCount, 2);
+
+    /* restart 不接受参数 */
+    FeedLine("restart=1\r\n");
+    FeedLine("restart 1\r\n");
+    FeedLine("restartx\r\n");
+    CHECK_INT(g_restart_calls, 2);
+    CHECK_INT(USB_Cmd_ErrCount, 3);
+
+    /* 重启不改变 PID 模式 */
+    CHECK_INT(g_mode, PID_MODE_SPEED);
+}
+
 static void TestProcessBudget(void)
 {
     char batch[256];
@@ -855,6 +884,7 @@ int main(void)
     TestRxOverflow();
     TestRxAbort();
     TestSaveCommand();
+    TestRestartCommand();
     TestProcessBudget();
     TestRingWrap();
     TestEmptyProcess();

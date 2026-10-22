@@ -97,7 +97,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
     ADC_State.Vunit = VDDA_CAL_VOLTAGE * (*VREFINT_CAL_ADDR) / ADC_Buf[ADC_BUF_VREFINT] / ADC_FULL_SCALE;
     ADC_State.Vbus  = ADC_Buf[ADC_BUF_VBUS] * ADC_State.Vunit * VBUS_DIVIDER;
 
-    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(1.0f / ADC_State.Vunit));
+    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t)(MP6539_OCP / ADC_State.Vunit));
 }
 
 /**

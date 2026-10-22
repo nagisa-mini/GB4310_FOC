@@ -37,13 +37,14 @@ USB_Command_Execute()
   ├─ PID_SetCurrentDRef()┘ (d 轴)
   ├─ PID_SetMode()       → mode 0/1/2/3 (变化时复位各环状态)
   ├─ PID_Config_Save()   → 无值命令 Save
-  └─ PID_Config_Load()   → 无值命令 Load
+  ├─ PID_Config_Load()   → 无值命令 Load
+  └─ MP6539_Restart()    → 无值命令 Restart
 ```
 
 设计约束：
 
 - USB 中断内**不解析字符串、不调用 PID、不写发送缓冲区**，只把整包数据写入 `USB_RxBuffer`。
-- 命令解析在主循环空闲时执行，单次最多消费 `USB_CMD_PROCESS_BUDGET`（64）字节，非阻塞。
+- 命令解析在主循环空闲时执行，单次最多消费 `USB_CMD_PROCESS_BUDGET`（64）字节；普通命令非阻塞，`Restart` 例外（见下）。
 - `USB_RxBuffer` 是单生产者（USB 中断）/单消费者（主循环）环形缓冲区，不需要关中断。
 - 解析过程不使用 `strtof` / `sscanf` / `printf`，无动态内存，可在裸机主循环安全运行。
 
@@ -55,12 +56,12 @@ USB_Command_Execute()
 
 ```text
 Key=Value      ← 参数命令
-Command        ← 无值命令 (Save / Load)
+Command        ← 无值命令 (Save / Load / Restart)
 ```
 
 - 行结尾：`\r`、`\n` 或 `\r\n`；三种都支持。
 - Key 不区分大小写；`Key`、`=`、`Value` 两侧允许空格或制表符。
-- 无值命令 `Save`、`Load` 前后允许空格，但后面不能再跟其他字符。
+- 无值命令 `Save`、`Load`、`Restart` 前后允许空格，但后面不能再跟其他字符。
 - Value 为十进制数，可带 `+` / `-` 号和一个小数点；**不支持指数**（`1e3` 会被拒绝）。
 - 空行忽略；一行只能有一条命令。
 - 非法命令、未知 Key、非法数值、超范围数值：整行丢弃，不修改任何 PID 状态，`USB_Cmd_ErrCount` 加一。
@@ -89,6 +90,7 @@ Command        ← 无值命令 (Save / Load)
 | `Mode` | `PID_SetMode()` | — | 0 / 1 / 2 / 3 |
 | `Save` | 保存 9 个增益到 Flash | — | 无值；要求当前 `Mode=0` |
 | `Load` | 从 Flash 读取并应用 9 个增益 | — | 无值；任意模式 |
+| `Restart` | 调用 `MP6539_Restart()` 重启栅极驱动 | — | 无值；任意模式；阻塞约 60ms |
 
 增益不允许为负；角度给定会自动折算到最短角度区间；速度给定单位为 RPM，不做 rad/s 换算。电流环 d/q 两轴共用同一组 `Curr_Kp/Ki/Kd`，修改时两轴同时生效。
 
@@ -164,6 +166,7 @@ Speed=400\r\nMode=2\r\nAngle_Kp=8.0\r\n
 增益:      Angle_Kp/...、Speed_Kp/...、Curr_Kp/... 可随时下发
 保存:      Mode=0  →  Save
 读取:      Load (任意模式)
+重启驱动:  Restart (建议先 Mode=0)
 ```
 
 先切模式再给给定，原因是 `mode=1` 时角度环每 5 ms 会重写 `Speed_Ref`；如果先发 `Speed=...` 再切 `Mode=1`，该值会被角度环覆盖。切到 `Mode=2` 后角度环停止写 `Speed_Ref`，此时再发 `Speed=...` 才能稳定保持。`Mode=3` 进入时会清 `Curr_Q_Ref` 和 `Curr_D_Ref`，因此 `Curr=...` / `Id=...` 要放在 `Mode=3` 之后。
@@ -217,6 +220,22 @@ Load
 - 无 ACK：成功时 `USB_Cmd_OkCount++`，校验失败/没有有效记录/模式不对/写入失败时 `USB_Cmd_ErrCount++`。
 - 使用 ST-Link/CubeProgrammer 做**整片擦除**会同时擦掉保存的参数；只擦除程序扇区则不受影响。
 - 参数页按“整页擦除再写”更新，不要周期性自动保存，避免无谓磨损。
+
+### 重启 MP6539 栅极驱动
+
+无值命令 `Restart` 直接调用 `MP6539_Restart()`：
+
+```text
+Restart
+```
+
+执行过程为 `FOC_Stop()` → 等待 20 ms → `nSLEEP` 拉低 → 等待 20 ms → `nSLEEP` 拉高 → 等待 20 ms → `FOC_Start()`，总阻塞约 60 ms。
+
+- `Restart` 不接受参数，`Restart=1`、`Restart 1` 都会被丢弃。
+- 不改变 PID 模式、给定和增益；如果当前处于 `Mode=1/2/3`，重启结束后 PWM 恢复，会继续按原给定驱动电机。
+- 运行中重启会短暂关闭三相 PWM 和栅极驱动，可能引起电流/转速突变；需要安全停机时先发 `Mode=0`，再发 `Restart`。
+- 执行期间 USB 接收中断仍工作，后续命令会暂存在 `USB_RxBuffer` 中，但发送端不要在这 60 ms 内灌入超过缓冲区的数据。
+- `Restart` 本身不做故障诊断；若 `nFAULT` 仍为低，重启后可能再次触发故障中断。
 
 ### Speed=0 高频震荡的排查
 
@@ -277,7 +296,7 @@ gcc -std=c11 -O2 -Wall -Wextra tests\usb_cmd_test.c BSP\USB.c BSP\Ringbuffer.c ^
 build\usb_cmd_test.exe
 ```
 
-覆盖内容：单命令、浮点解析、跨包分片、CR/LF/CRLF、一包多行、大小写/空格、别名、非法输入、范围检查、角度归一化、给定变化清积分、电流模式与电流给定、无值 `Save`/`Load`、超长行、缓冲区溢出、环形回绕、USB 复位半行丢弃、解析字节预算。
+覆盖内容：单命令、浮点解析、跨包分片、CR/LF/CRLF、一包多行、大小写/空格、别名、非法输入、范围检查、角度归一化、给定变化清积分、电流模式与电流给定、无值 `Save`/`Load`/`Restart`、超长行、缓冲区溢出、环形回绕、USB 复位半行丢弃、解析字节预算。
 
 固件构建（STM32CubeIDE 或本机 ninja）：
 
@@ -290,6 +309,7 @@ C:\Users\15483\AppData\Local\stm32cube\bundles\ninja\1.13.2+st.1\bin\ninja.exe -
 ## 8. 已知限制与扩展点
 
 - 不支持无换行的“裸帧”；主机必须发送 `\r`/`\n`。
+- `Restart` 在主循环中同步调用 `MP6539_Restart()`，会阻塞约 60ms（含 `FOC_Stop`/`FOC_Start` 和三次 20ms 延时），不是非阻塞命令。
 - 不提供查询命令、ACK/NAK、CRC 或鉴权；USB CDC 链路本身可靠，默认信任上位机。
 - 电流环 d/q 共用一组增益；如需 d/q 独立整定，需要扩展 `PID_Loop_t` 和 Flash 记录格式。
 - 参数保存在 Flash 最后一页（见“参数保存与上电加载”）；整片擦除会同时擦掉保存的参数。

@@ -1,6 +1,7 @@
 #include "USB.h"
 
 #include <PID.h>
+#include <MP6539.h>
 
 /*==============================================================================
  * 模块内部状态
@@ -43,7 +44,8 @@ typedef enum {
     USB_CMD_ID_CURR_D_REF,
     USB_CMD_ID_MODE,
     USB_CMD_ID_SAVE,
-    USB_CMD_ID_LOAD
+    USB_CMD_ID_LOAD,
+    USB_CMD_ID_RESTART
 } USB_CmdId_t;
 
 typedef struct {
@@ -86,6 +88,7 @@ static const USB_CmdEntry_t s_cmd_table[] = {
     { "mode",          USB_CMD_ID_MODE       },
     { "save",          USB_CMD_ID_SAVE       },     /* 无值命令: Save */
     { "load",          USB_CMD_ID_LOAD       },     /* 无值命令: Load */
+    { "restart",       USB_CMD_ID_RESTART    },     /* 无值命令: 重启 MP6539 */
 };
 
 /*==============================================================================
@@ -450,11 +453,28 @@ static bool USB_ApplyLoad(const char *value)
 }
 
 /**
+ * @brief  重启 MP6539 栅极驱动
+ * @note   无值命令 "restart"; 函数内部会 FOC_Stop → 拉低 nSLEEP → 拉高 →
+ *         FOC_Start, 总阻塞约 60ms, 执行期间 USB 命令会排队。
+ *         不改变 PID 模式/给定; 运行模式下重启后会按原给定继续驱动。
+ */
+static bool USB_ApplyRestart(const char *value)
+{
+    if (value != NULL)
+    {
+        return false;      /* restart 不接受参数 */
+    }
+
+    MP6539_Restart();
+    return true;
+}
+
+/**
  * @brief  执行一条已去掉换行的命令
  * @param  line 以 '\0' 结尾的命令行
  * @retval true 命令合法且已生效; false 忽略本行
- * @note   支持 "Key=Value" 和少量无值命令 "save"/"load"; 无值命令后
- *         不允许再跟其他字符 (空格除外)。
+ * @note   支持 "Key=Value" 和少量无值命令 "save"/"load"/"restart";
+ *         无值命令后不允许再跟其他字符 (空格除外)。
  */
 static bool USB_Command_Execute(const char *line)
 {
@@ -545,6 +565,7 @@ static bool USB_Command_Execute(const char *line)
         case USB_CMD_ID_MODE: return USB_ApplyMode(value);
         case USB_CMD_ID_SAVE: return USB_ApplySave(value);
         case USB_CMD_ID_LOAD: return USB_ApplyLoad(value);
+        case USB_CMD_ID_RESTART: return USB_ApplyRestart(value);
         default: return false;
     }
 }

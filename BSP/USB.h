@@ -48,7 +48,8 @@ void USB_RxPush(const uint8_t *data, uint16_t len);
 void USB_RxAbort(void);
 
 /**
- * @brief  空闲命令解析 (主循环调用, 非阻塞, 单次有字节预算)
+ * @brief  空闲命令解析 (主循环调用, 单次有字节预算)
+ * @note   普通命令非阻塞; Restart 会同步调用 MP6539_Restart(), 阻塞约 60ms。
  */
 void USB_Command_Process(void);
 
